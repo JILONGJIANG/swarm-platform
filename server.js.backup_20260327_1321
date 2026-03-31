@@ -1,0 +1,396 @@
+const express = require('express');
+const path = require('path');
+const { execSync } = require('child_process');
+
+const app = express();
+app.use(express.json());
+const PORT = process.env.PORT || 18800;
+
+// ============================================
+// 实时消息中心（SSE + 消息存储）
+// ============================================
+const MAX_MESSAGES = 200;
+const messages = []; // { id, ts, from, role, content, type }
+let msgIdCounter = 1;
+const sseClients = new Set();
+
+function broadcastMessage(msg) {
+  const data = `data: ${JSON.stringify(msg)}\n\n`;
+  for (const client of sseClients) {
+    try { client.write(data); } catch (e) { sseClients.delete(client); }
+  }
+}
+
+function addMessage({ from, role, content, type = 'chat' }) {
+  const msg = {
+    id: msgIdCounter++,
+    ts: Date.now(),
+    time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    from: from || 'system',
+    role: role || 'worker',
+    content,
+    type,
+  };
+  messages.push(msg);
+  if (messages.length > MAX_MESSAGES) messages.shift();
+  broadcastMessage(msg);
+  return msg;
+}
+
+// SSE 订阅端点
+app.get('/api/chat/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  // 发送历史消息（最近50条）
+  const history = messages.slice(-50);
+  res.write(`data: ${JSON.stringify({ type: 'history', messages: history })}\n\n`);
+
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
+});
+
+// 接收消息 API（gimi/Mac agent 都可以 POST）
+app.post('/api/chat/message', (req, res) => {
+  const { from, role, content, type } = req.body;
+  if (!content) return res.status(400).json({ ok: false, error: 'content required' });
+  const msg = addMessage({ from, role, content, type });
+  res.json({ ok: true, msg });
+});
+
+// 获取历史消息
+app.get('/api/chat/messages', (req, res) => {
+  res.json({ ok: true, messages: messages.slice(-100) });
+});
+
+// ============================================
+// 任务队列（Jilong → gimi 分配任务）
+// ============================================
+const taskQueue = {}; // { gimi1: { task, assignedAt, status } }
+
+// 给某个 gimi 分配任务
+app.post('/api/task/assign', (req, res) => {
+  const { gimi, task, from } = req.body;
+  if (!gimi || !task) return res.status(400).json({ ok: false, error: 'gimi and task required' });
+  taskQueue[gimi] = { task, assignedAt: Date.now(), status: 'pending', from: from || 'Jilong' };
+  addMessage({ from: from || 'Jilong', role: 'manager', content: `📌 已分配任务给 ${gimi}：${task}`, type: 'task' });
+  res.json({ ok: true });
+});
+
+// gimi 拉取自己的待办任务
+app.get('/api/task/:gimi', (req, res) => {
+  const t = taskQueue[req.params.gimi];
+  if (!t || t.status === 'done') return res.json({ ok: true, task: null });
+  res.json({ ok: true, task: t });
+});
+
+// gimi 更新任务状态/进度
+app.post('/api/task/:gimi/update', (req, res) => {
+  const { status, progress } = req.body;
+  const gimi = req.params.gimi;
+  if (taskQueue[gimi]) {
+    taskQueue[gimi].status = status || taskQueue[gimi].status;
+    taskQueue[gimi].progress = progress;
+    if (status === 'done') {
+      addMessage({ from: gimi, role: 'worker', content: `✅ ${gimi} 任务完成：${taskQueue[gimi].task}`, type: 'task' });
+    }
+  }
+  res.json({ ok: true });
+});
+
+// 查所有任务状态
+app.get('/api/tasks', (req, res) => {
+  res.json({ ok: true, tasks: taskQueue });
+});
+
+// ============================================
+// 蜂群规章制度 API（分身启动时拉取）
+// ============================================
+const GOLDEN_RULES = {
+  version: 'v3.0',
+  updatedAt: '2026-03-25',
+  author: 'Jilong',
+  rules: [
+    { id:1,  cat:'蜂群架构', title:'三主脑架构',      priority:'高', content:'1号(Legion·总调度)+3号(Linux·协同)+7号(Mac·协同)。1号主导发布任务，三主脑协同执行，1号验收汇报Jilong。' },
+    { id:2,  cat:'蜂群架构', title:'分身永远在线',     priority:'高', content:'24个分身100%在线。发现离线立即修复。不允许任何分身空闲超过30分钟。' },
+    { id:3,  cat:'蜂群架构', title:'任务平台唯一指挥', priority:'高', content:'所有任务必须经过星辰大海任务平台(http://192.168.1.106:18800)发布追踪验收。禁止绕过平台。' },
+    { id:4,  cat:'任务管理', title:'任务发布规则',     priority:'高', content:'任务必须有负责人/截止时间/验收标准。完成后POST /api/chat/message汇报。' },
+    { id:5,  cat:'任务管理', title:'执行汇报制度',     priority:'高', content:'每完成子步骤立即汇报。遇阻碍1小时内上报1号。每小时向Jilong汇报整体进度。' },
+    { id:6,  cat:'操作规范', title:'合规第一',         priority:'高', content:'所有操作符合西班牙法律法规。涉及财税必须双重验证。' },
+    { id:7,  cat:'操作规范', title:'自保红线',         priority:'高', content:'永久禁止：openclaw gateway restart/stop。需重启只能告知Jilong手动操作。' },
+    { id:8,  cat:'操作规范', title:'代码修改红线',     priority:'高', content:'改代码前备份zip到~/backups/。禁止修改现有路由/删除字段/改表结构。只追加不修改。' },
+    { id:9,  cat:'通信协议', title:'汇报地址',         priority:'中', content:'POST http://172.17.0.1:18800/api/chat/message | from=分身名 | type=chat/task/heartbeat' },
+    { id:10, cat:'通信协议', title:'任务拉取地址',     priority:'中', content:'GET http://172.17.0.1:18800/api/task/{gimiN} | 拉取待执行任务 | 完成后POST /api/task/{gimiN}/update' },
+    { id:11, cat:'模型分工', title:'模型使用原则',     priority:'低', content:'1号Claude Sonnet做决策。分身qwen3.5-plus做执行。禁止自动升级openclaw。' },
+  ],
+  swarm: {
+    platform: 'http://192.168.1.106:18800',
+    platformInternal: 'http://172.17.0.1:18800',
+    managers: [
+      { id:'1号', host:'192.168.1.106', port:18789, role:'总调度' },
+      { id:'3号', host:'192.168.1.79',  port:18789, role:'协同执行' },
+      { id:'7号', host:'192.168.1.107', port:18789, role:'协同执行' },
+    ],
+    legion:  { gimi: Array.from({length:12}, (_,i) => `gimi${i+1}`) },
+    mac:     { jimi: Array.from({length:12}, (_,i) => `jimi${i+1}`) },
+  }
+};
+
+app.get('/api/rules', (req, res) => {
+  res.json({ ok: true, ...GOLDEN_RULES });
+});
+
+// 系统上线通知
+addMessage({ from: '星辰大海平台', role: 'system', content: '🚀 平台已启动，等待各节点接入...', type: 'system' });
+
+// Worker → Gimi 映射 + 端口配置
+const WORKER_CONFIG = {
+  worker1: { alias: '吉秘1', novncPort: 16801, ocPort: 18801, novnc: true },
+  worker2: { alias: '吉秘2', novncPort: 16802, ocPort: 18802, novnc: true },
+  worker3: { alias: '吉秘3', novncPort: 16803, ocPort: 18803, novnc: true },
+  worker4: { alias: '吉秘4', novncPort: 16804, ocPort: 18804, novnc: true },
+  worker5: { alias: '吉秘5', novncPort: 16805, ocPort: 18805, novnc: true },
+  worker6: { alias: '吉秘6', novncPort: 16806, ocPort: 18806, novnc: true },
+};
+
+// 3号机 Linux 节点（192.168.1.79）
+const NODE3_CONFIG = {
+  host: '192.168.1.79',
+  port: 18789,
+  token: 'bc1393dac2872e7135f3ba7751b98d6a8f5467806ac9eec8',
+  name: '3号机 Linux',
+};
+
+// 3号机状态缓存
+let node3Status = 'unknown';
+async function probeNode3() {
+  try {
+    const http = require('http');
+    await new Promise((resolve) => {
+      const req = http.get(`http://${NODE3_CONFIG.host}:${NODE3_CONFIG.port}/`, { timeout: 3000 }, (res) => {
+        node3Status = res.statusCode < 400 ? 'online' : 'offline';
+        resolve();
+      });
+      req.on('error', () => { node3Status = 'offline'; resolve(); });
+      req.on('timeout', () => { req.destroy(); node3Status = 'offline'; resolve(); });
+    });
+  } catch { node3Status = 'offline'; }
+}
+probeNode3();
+setInterval(probeNode3, 15000);
+
+app.get('/api/node3/status', (req, res) => {
+  res.json({
+    ok: true,
+    host: NODE3_CONFIG.host,
+    port: NODE3_CONFIG.port,
+    name: NODE3_CONFIG.name,
+    status: node3Status,
+    gatewayUrl: `http://${NODE3_CONFIG.host}:${NODE3_CONFIG.port}`,
+  });
+});
+
+// Mac Studio jimi1~12 配置（192.168.1.107）- 7 号分身团队
+// 更新时间：2026-03-27 13:21
+// Token: 839463903fea3e028b3edf6b47aca6b58f12ea06239d4939
+const MAC_WORKERS = [
+  { id:'jimi1',  gatewayUrl:'http://192.168.1.107:18789/', status:'verified' },    // 7 号 Manager
+  { id:'jimi2',  gatewayUrl:'http://192.168.1.107:18802/', status:'verified' },    // 21 号
+  { id:'jimi3',  gatewayUrl:'http://192.168.1.107:18803/', status:'verified' },    // 22 号
+  { id:'jimi4',  gatewayUrl:'http://192.168.1.107:18793/', status:'verified' },    // 23 号
+  { id:'jimi5',  gatewayUrl:'http://192.168.1.107:18794/', status:'verified' },    // 24 号
+  { id:'jimi6',  gatewayUrl:'http://192.168.1.107:18795/', status:'verified' },    // 25 号
+  { id:'jimi7',  gatewayUrl:'http://192.168.1.107:18807/', status:'verified' },    // 26 号
+  { id:'jimi8',  gatewayUrl:'http://192.168.1.107:18808/', status:'verified' },    // 27 号
+  { id:'jimi9',  gatewayUrl:'http://192.168.1.107:18809/', status:'verified' },    // 28 号
+  { id:'jimi10', gatewayUrl:'http://192.168.1.107:18810/', status:'verified' },    // 29 号
+  { id:'jimi11', gatewayUrl:'http://192.168.1.107:18811/', status:'verified' },    // 30 号
+  { id:'jimi12', gatewayUrl:'http://192.168.1.107:18832/', status:'verified' },    // 31 号
+];
+
+// Mac workers 状态缓存（HTTP 探活）
+const macStatus = {};
+async function probeMacWorkers() {
+  for (const w of MAC_WORKERS) {
+    const port = parseInt(w.novncUrl.match(/:(\d+)\//)[1]);
+    try {
+      const http = require('http');
+      await new Promise((resolve) => {
+        const req = http.get(`http://192.168.1.107:${port}/`, { timeout: 2000 }, (res) => {
+          macStatus[w.id] = res.statusCode < 400 ? 'healthy' : 'unhealthy';
+          resolve();
+        });
+        req.on('error', () => { macStatus[w.id] = 'down'; resolve(); });
+        req.on('timeout', () => { req.destroy(); macStatus[w.id] = 'down'; resolve(); });
+      });
+    } catch { macStatus[w.id] = 'down'; }
+  }
+}
+probeMacWorkers();
+setInterval(probeMacWorkers, 15000); // 每15秒探活
+
+// Mac jimi1~12 真实员工配对
+// 更新：2026-03-27 - Yuhan 改对接 jimi11，Bostin 改对接 jimi12
+const MAC_STAFF = [
+  { name: 'Ivan De Udaeta',      email: 'ivan@jilong.es',           dept: 'Inversor Inmobiliaria', jimi: 'jimi1' },
+  { name: 'CAIYU',               email: 'ana@jilong.es',            dept: 'Inversor Inmobiliaria', jimi: 'jimi2' },
+  { name: 'Miquel',              email: 'ingenieria@energiarea.es', dept: 'Energía',               jimi: 'jimi3' },
+  { name: 'Matias',              email: 'info@energiarea.es',       dept: 'Energía',               jimi: 'jimi4' },
+  { name: 'Dingfan',             email: 'energiarea@energiarea.es', dept: 'Energía',               jimi: 'jimi5' },
+  { name: 'Li Haoran',           email: 'inmo@jilong.es',           dept: 'Promoción',             jimi: 'jimi6' },
+  { name: 'Estela',              email: '1obras@jilong.es',         dept: 'Promoción',             jimi: 'jimi7' },
+  { name: 'Tang yihong',         email: 'arquitecto2@jilong.es',    dept: 'Promoción',             jimi: 'jimi8' },
+  { name: 'Isaac Wang',          email: '1arquitecto@jilong.es',    dept: 'Promoción',             jimi: 'jimi9' },
+  { name: 'Eva Subias',          email: 'abogado@jilong.es',        dept: 'Other',                 jimi: 'jimi10' },
+  { name: 'Yuhan',               email: 'yuhan@jilong.es',          dept: 'Other',                 jimi: 'jimi11' },  // ← 改：原来对接吉秘 10 号，现改 7 号机 jimi11
+  { name: 'Bostin',              email: 'bostin@jilong.es',         dept: 'Other',                 jimi: 'jimi12' },  // ← 改：原来对接吉秘 9 号，现改 7 号机 jimi12
+];
+
+// Mac workers API
+app.get('/api/mac-workers', (req, res) => {
+  const result = MAC_WORKERS.map((w, i) => ({
+    id: w.id,
+    name: w.id,
+    machine: 'Mac Studio (192.168.1.107)',
+    status: macStatus[w.id] || 'unknown',
+    novnc: true,
+    novncUrl: w.novncUrl,
+    colleague: MAC_STAFF[i]?.name || `员工${i+1}`,
+    email: MAC_STAFF[i]?.email || `abc${i+1}@jilong.es`,
+    dept: MAC_STAFF[i]?.dept || '—',
+  }));
+  res.json({ ok: true, workers: result });
+});
+
+// 动态生成 worker 端口（worker1=16801, worker2=16802 ... workerN=1680N）
+function getWorkerCfg(name) {
+  // 先查静态配置
+  if (WORKER_CONFIG[name]) return WORKER_CONFIG[name];
+  // 动态推断：workerN → gimiN, 端口 1680N
+  const m = name.match(/^worker(\d+)$/);
+  if (m) {
+    const n = parseInt(m[1]);
+    return {
+      alias: `吉秘${n}`,
+      novncPort: 16800 + n,
+      ocPort: 18800 + n,
+      novnc: true,
+    };
+  }
+  return {};
+}
+
+// 实时容器状态 API — 包含断线容器（用 docker ps -a）
+app.get('/api/containers', (req, res) => {
+  try {
+    const out = execSync(
+      'docker ps -a --format "{{.Names}}\\t{{.Status}}\\t{{.ID}}" 2>/dev/null',
+      { timeout: 5000 }
+    ).toString().trim();
+
+    const containers = out.split('\n')
+      .filter(line => line.trim())
+      .map(line => {
+        const [name, status, id] = line.split('\t');
+        // 只处理 worker 容器
+        if (!/^worker\d+$/.test(name)) return null;
+        const cfg = getWorkerCfg(name);
+        const health = status.includes('(healthy)') ? 'healthy'
+                     : status.includes('(unhealthy)') ? 'unhealthy'
+                     : status.startsWith('Up') ? 'up'
+                     : status.startsWith('Exited') || status.startsWith('Dead') ? 'down'
+                     : 'unknown';
+        const uptime = status.replace(/\(.*?\)/, '').trim();
+        return {
+          id: id ? id.slice(0, 12) : '—',
+          name: cfg.alias || name,
+          dockerName: name,
+          status: health,
+          uptime,
+          ocPort: cfg.ocPort || null,
+          novnc: cfg.novnc || false,
+          novncPort: cfg.novncPort || null,
+          novncUrl: cfg.novncPort ? `http://192.168.1.106:${cfg.novncPort}/vnc_auto.html` : null,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({ ok: true, containers, ts: Date.now() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// 禁用 304 缓存，强制每次返回 200
+app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
+// 静态文件服务 - 指向 React build 目录
+app.use(express.static(path.join(__dirname, 'build'), { etag: false, lastModified: false }));
+
+// SPA 路由支持
+app.get('/{*splat}', (req, res) => {
+  res.sendFile(path.join(__dirname, 'build', 'index.html'));
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ 星辰大海任务平台 running on http://0.0.0.0:${PORT}`);
+});
+
+
+// ============================================
+// ERP 积分/技能系统代理 [CHANGE 2026-03-26]
+// ============================================
+const http = require('http');
+const ERP_BASE = 'http://localhost:3020/apiData';
+
+function proxyERP(path, req, res) {
+  const url = ERP_BASE + path;
+  const method = req.method || 'GET';
+  let body = '';
+  req.on('data', d => body += d);
+  req.on('end', () => {
+    const options = {
+      method,
+      headers: { 'Content-Type': 'application/json' }
+    };
+    const proxyReq = http.request(url, options, proxyRes => {
+      res.status(proxyRes.statusCode);
+      proxyRes.pipe(res);
+    });
+    proxyReq.on('error', () => res.status(502).json({error:'ERP unavailable'}));
+    if (body) proxyReq.write(body);
+    proxyReq.end();
+  });
+}
+
+// 积分排行榜
+app.get('/api/gimi/leaderboard', (req, res) => proxyERP('/gimi/points/leaderboard', req, res));
+// 技能列表
+app.get('/api/gimi/skills', (req, res) => proxyERP('/gimi/skill/list', req, res));
+// 技能统计
+app.get('/api/gimi/skill-stats', (req, res) => proxyERP('/gimi/skill/stats', req, res));
+// 桌面入口
+app.get('/api/gimi/desktops', (req, res) => proxyERP('/gimi/desktops', req, res));
+// 同事工作记录
+app.get('/api/gimi/colleague-logs', (req, res) => proxyERP('/gimi/colleague/history', req, res));
+// 记录工作
+app.post('/api/gimi/log-work', (req, res) => proxyERP('/gimi/colleague/log', req, res));
+// 添加积分
+app.post('/api/gimi/add-points', (req, res) => proxyERP('/gimi/points/add', req, res));
+// 创建技能
+app.post('/api/gimi/create-skill', (req, res) => proxyERP('/gimi/skill/create', req, res));
+// 每日简报
+app.get('/api/erp/daily-summary', (req, res) => proxyERP('/notification/daily-summary', req, res));
+// 风险汇总
+app.get('/api/erp/risk-summary', (req, res) => proxyERP('/risk/summary', req, res));
+
+console.log('✅ ERP 积分/技能系统代理已启动');
