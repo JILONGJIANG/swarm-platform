@@ -598,7 +598,16 @@ function TaskBoard() {
               <span style={{padding:'2px 7px',borderRadius:'4px',fontSize:'10px',fontWeight:'700',background:cat.color+'22',color:cat.color,whiteSpace:'nowrap'}}>{cat.icon}{cat.label}</span>
               <span style={{color:'#6c757d',fontSize:'11px',fontFamily:'monospace',whiteSpace:'nowrap'}}>{task.id}</span>
               <span style={{color:'#e0e0e0',fontSize:'13px',fontWeight:'600',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{task.title}</span>
-              <span style={{color:'#6c757d',fontSize:'11px',whiteSpace:'nowrap',display:'none'}}>@{task.executor}</span>
+              
+              {/* 新增三列：容器ID, 容器名称, 同事名称 */}
+              <div style={{display: 'flex', gap: '8px', alignItems: 'center', fontSize: '11px', whiteSpace: 'nowrap'}}>
+                {task.container_id && <span style={{color: '#8b5cf6', background: 'rgba(139, 92, 246, 0.1)', padding: '2px 6px', borderRadius: '4px'}}>ID: {task.container_id}</span>}
+                {task.container_name && <span style={{color: '#10b981', background: 'rgba(16, 185, 129, 0.1)', padding: '2px 6px', borderRadius: '4px'}}>🤖 {task.container_name}</span>}
+                {task.colleague_name && <span style={{color: '#f59e0b', background: 'rgba(245, 158, 11, 0.1)', padding: '2px 6px', borderRadius: '4px'}}>👤 {task.colleague_name}</span>}
+                {/* 兼容没配对的旧数据显示 executor */}
+                {!task.container_id && task.executor && <span style={{color: '#6c757d'}}>@{task.executor}</span>}
+              </div>
+
               <div style={{display:'flex',alignItems:'center',gap:'6px',minWidth:'100px'}}>
                 <div style={{flex:1}}><ProgressBar value={task.progress}/></div>
                 <span style={{color:task.progress===100?'#4caf50':task.progress>50?'#ff9800':'#00d9ff',fontSize:'11px',fontWeight:'700',width:'30px',textAlign:'right'}}>{task.progress}%</span>
