@@ -1796,6 +1796,123 @@ app.post('/api/upgrade/purge-with-jimi', async (req, res) => {
 
 console.log('✅ JIMI 主脑桥接层已集成 (/api/jimi/*)');
 
+// ══════════════════════════════════════════════════════════════
+// Phone Hub 桥接层（手机控制平台）
+// phone-hub 独立运行在固定机器上，平台只做代理
+// 多机支持：PHONE_HUBS 数组，每台机器一条记录
+// ══════════════════════════════════════════════════════════════
+const PHONE_HUBS = JSON.parse(process.env.PHONE_HUBS || JSON.stringify([
+  {
+    id: 'hub-1',
+    name: '1号Legion手机控制',
+    url: process.env.PHONE_HUB_1_URL || 'http://192.168.1.110:5050',
+    machines: ['小米', '华为P40', 'OPPO长天'],
+    location: '1号Legion (192.168.1.110)',
+  },
+  // 未来第二台机器在这里添加：
+  // { id: 'hub-2', name: '2号机手机控制', url: 'http://192.168.1.XXX:5050', ... }
+]));
+
+// phone-hub 状态缓存
+const phoneHubStatus = {};
+async function probePhoneHubs() {
+  for (const hub of PHONE_HUBS) {
+    try {
+      const r = await httpRequest(`${hub.url}/api/health`, 'GET', null, 4000);
+      phoneHubStatus[hub.id] = {
+        ...hub,
+        online: r.status < 400,
+        health: r.body,
+        last_check: new Date().toISOString(),
+      };
+    } catch {
+      phoneHubStatus[hub.id] = { ...hub, online: false, last_check: new Date().toISOString() };
+    }
+  }
+}
+probePhoneHubs();
+setInterval(probePhoneHubs, 30000);
+
+// GET /api/phone/status — 所有 phone-hub 在线状态
+app.get('/api/phone/status', (req, res) => {
+  res.json({ ok: true, hubs: Object.values(phoneHubStatus), ts: Date.now() });
+});
+
+// GET /api/phone/summary — 汇总数据（设备数/微信对话数/XHS队列）
+app.get('/api/phone/summary', async (req, res) => {
+  const summaries = [];
+  for (const hub of PHONE_HUBS) {
+    try {
+      const r = await httpRequest(`${hub.url}/api/summary`, 'GET', null, 6000);
+      summaries.push({ hub_id: hub.id, hub_name: hub.name, ...r.body });
+    } catch (e) {
+      summaries.push({ hub_id: hub.id, hub_name: hub.name, ok: false, error: e.message });
+    }
+  }
+  res.json({ ok: true, summaries, ts: Date.now() });
+});
+
+// GET /api/phone/devices — 所有设备实时状态
+app.get('/api/phone/devices', async (req, res) => {
+  const all = [];
+  for (const hub of PHONE_HUBS) {
+    try {
+      const r = await httpRequest(`${hub.url}/api/status`, 'GET', null, 6000);
+      const devices = (r.body?.devices || []).map(d => ({ ...d, hub_id: hub.id, hub_name: hub.name }));
+      all.push(...devices);
+    } catch (e) {
+      all.push({ hub_id: hub.id, error: e.message });
+    }
+  }
+  res.json({ ok: true, devices: all, ts: Date.now() });
+});
+
+// GET /api/phone/wechat — 微信对话列表
+app.get('/api/phone/wechat', async (req, res) => {
+  const hub_id = req.query.hub || PHONE_HUBS[0]?.id;
+  const hub = PHONE_HUBS.find(h => h.id === hub_id) || PHONE_HUBS[0];
+  if (!hub) return res.json({ ok: false, error: 'no hub' });
+  try {
+    const r = await httpRequest(`${hub.url}/api/wechat/conversations`, 'GET', null, 6000);
+    res.json({ ok: true, hub_id: hub.id, data: r.body });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// POST /api/phone/wechat/trigger — 触发微信抓取
+app.post('/api/phone/wechat/trigger', async (req, res) => {
+  const { hub_id, alias } = req.body || {};
+  const hub = PHONE_HUBS.find(h => h.id === hub_id) || PHONE_HUBS[0];
+  if (!hub) return res.json({ ok: false, error: 'no hub' });
+  try {
+    const r = await httpRequest(`${hub.url}/api/wechat/trigger`, 'POST', { alias }, 6000);
+    res.json({ ok: true, result: r.body });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// GET /api/phone/xhs — 小红书发帖队列
+app.get('/api/phone/xhs', async (req, res) => {
+  const hub = PHONE_HUBS[0];
+  if (!hub) return res.json({ ok: false, error: 'no hub' });
+  try {
+    const r = await httpRequest(`${hub.url}/api/xhs/queue`, 'GET', null, 6000);
+    res.json({ ok: true, hub_id: hub.id, data: r.body });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// 通用代理：POST /api/phone/proxy — 转发任意请求到指定 hub
+app.post('/api/phone/proxy', async (req, res) => {
+  const { hub_id, path: apiPath, method = 'POST', body: proxyBody } = req.body || {};
+  const hub = PHONE_HUBS.find(h => h.id === hub_id) || PHONE_HUBS[0];
+  if (!hub) return res.json({ ok: false, error: 'hub not found' });
+  try {
+    const r = await httpRequest(`${hub.url}${apiPath}`, method, proxyBody, 10000);
+    res.json({ ok: true, status: r.status, data: r.body });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+console.log('✅ Phone Hub 桥接层已集成 (/api/phone/*)');
+console.log(`   已配置 ${PHONE_HUBS.length} 个 Hub: ${PHONE_HUBS.map(h => h.name).join(', ')}`);
+
 // API 定义结束
 
 app.listen(PORT, '0.0.0.0', () => {

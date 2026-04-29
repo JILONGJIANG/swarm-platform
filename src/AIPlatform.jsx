@@ -256,6 +256,211 @@ function TaskDetailModal({ task, onClose, onRefresh }) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// 手机控制面板 — phone-hub 独立运行，平台做代理展示
+// ══════════════════════════════════════════════════════════════
+function PhoneHubPanel() {
+  const [hubs, setHubs]         = React.useState([]);
+  const [devices, setDevices]   = React.useState([]);
+  const [summary, setSummary]   = React.useState(null);
+  const [wechat, setWechat]     = React.useState([]);
+  const [xhs, setXhs]           = React.useState([]);
+  const [loading, setLoading]   = React.useState(true);
+  const [section, setSection]   = React.useState('overview');
+  const [triggerResult, setTriggerResult] = React.useState('');
+
+  const fetchAll = () => {
+    fetch('/api/phone/status').then(r => r.json()).then(d => setHubs(d.hubs || [])).catch(() => {});
+    fetch('/api/phone/summary').then(r => r.json()).then(d => { setSummary(d.summaries?.[0] || null); setLoading(false); }).catch(() => setLoading(false));
+    fetch('/api/phone/devices').then(r => r.json()).then(d => setDevices(d.devices || [])).catch(() => {});
+  };
+
+  const fetchWechat = () => {
+    fetch('/api/phone/wechat').then(r => r.json()).then(d => setWechat(d.data || [])).catch(() => {});
+  };
+
+  const fetchXhs = () => {
+    fetch('/api/phone/xhs').then(r => r.json()).then(d => setXhs(d.data || [])).catch(() => {});
+  };
+
+  React.useEffect(() => {
+    fetchAll();
+    const t = setInterval(fetchAll, 15000);
+    return () => clearInterval(t);
+  }, []);
+
+  React.useEffect(() => {
+    if (section === 'wechat') fetchWechat();
+    if (section === 'xhs') fetchXhs();
+  }, [section]);
+
+  const triggerWechat = (alias) => {
+    fetch('/api/phone/wechat/trigger', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ hub_id: hubs[0]?.id, alias }),
+    }).then(r => r.json()).then(d => setTriggerResult(d.ok ? `✅ ${alias} 微信抓取已触发` : `❌ ${d.error}`));
+  };
+
+  const S = {
+    card: { background: '#0d1117', border: '1px solid #21262d', borderRadius: '10px', padding: '14px 16px', marginBottom: '10px' },
+    label: { color: '#6c757d', fontSize: '10px', marginBottom: '3px' },
+    tabs: { display: 'flex', gap: '6px', marginBottom: '14px', flexWrap: 'wrap' },
+  };
+
+  const mainHub = hubs[0];
+  const tabs = [
+    { id: 'overview', label: '📊 总览' },
+    { id: 'devices',  label: `📱 设备 (${devices.length})` },
+    { id: 'wechat',   label: `💬 微信 (${summary?.devices?.[0]?.wechat_contacts || 0})` },
+    { id: 'xhs',      label: `📕 小红书 (${summary?.xhs_queue_total || 0})` },
+  ];
+
+  return (
+    <div style={{ padding: '16px' }}>
+      {/* 头部 */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <span style={{ fontSize: '28px' }}>📱</span>
+          <div>
+            <div style={{ color: '#e0e0e0', fontSize: '16px', fontWeight: '800' }}>手机控制中心</div>
+            <div style={{ color: '#6c757d', fontSize: '11px' }}>phone-hub 独立运行 · 微信/WhatsApp/小红书</div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {hubs.map(h => (
+            <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: h.online ? '#4caf50' : '#f44336' }} />
+              <span style={{ color: h.online ? '#4caf50' : '#f44336', fontSize: '11px' }}>{h.name}</span>
+            </div>
+          ))}
+          <button onClick={fetchAll} style={{ padding: '4px 10px', background: 'rgba(76,175,80,0.1)', color: '#4caf50', border: '1px solid rgba(76,175,80,0.3)', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}>🔄</button>
+        </div>
+      </div>
+
+      {/* 子Tab */}
+      <div style={S.tabs}>
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setSection(t.id)} style={{ padding: '5px 12px', borderRadius: '6px', fontSize: '11px', cursor: 'pointer', border: '1px solid', fontWeight: '600', borderColor: section === t.id ? '#4caf50' : '#30363d', background: section === t.id ? 'rgba(76,175,80,0.15)' : '#0d1117', color: section === t.id ? '#4caf50' : '#6c757d' }}>{t.label}</button>
+        ))}
+      </div>
+
+      {loading && <div style={{ color: '#6c757d', textAlign: 'center', padding: '40px' }}>⏳ 连接 phone-hub...</div>}
+
+      {/* 总览 */}
+      {!loading && section === 'overview' && (
+        <>
+          {!mainHub?.online && (
+            <div style={{ padding: '12px', background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', borderRadius: '8px', color: '#f44336', fontSize: '12px', marginBottom: '12px' }}>
+              ❌ phone-hub 离线。请在本机运行：<code style={{ color: '#ff9800' }}>cd 脚本/phone-hub && python3 main.py --port 5050</code>
+            </div>
+          )}
+          {/* Hub 信息卡 */}
+          {hubs.map(hub => (
+            <div key={hub.id} style={S.card}>
+              <div style={{ color: '#4caf50', fontSize: '12px', fontWeight: '700', marginBottom: '8px' }}>{hub.name}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '8px', fontSize: '12px' }}>
+                <div><div style={S.label}>位置</div><div style={{ color: '#e0e0e0' }}>{hub.location}</div></div>
+                <div><div style={S.label}>手机</div><div style={{ color: '#e0e0e0' }}>{hub.machines?.join(' / ')}</div></div>
+                <div><div style={S.label}>端口</div><div style={{ color: '#00d9ff' }}>{hub.url}</div></div>
+              </div>
+            </div>
+          ))}
+          {/* 汇总数据 */}
+          {summary && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '10px', marginBottom: '10px' }}>
+                {[
+                  { label: 'ADB在线', value: summary.devices?.filter(d => d.adb_connected).length || 0, color: '#4caf50' },
+                  { label: '微信联系人', value: summary.devices?.reduce((s,d) => s + (d.wechat_contacts||0), 0) || 0, color: '#00d9ff' },
+                  { label: 'XHS队列', value: summary.xhs_queue_total || 0, color: '#ff9800' },
+                  { label: 'XHS待审', value: summary.xhs_pending || 0, color: '#bb86fc' },
+                ].map(m => (
+                  <div key={m.label} style={{ ...S.card, textAlign: 'center', marginBottom: 0 }}>
+                    <div style={{ color: m.color, fontSize: '22px', fontWeight: '800' }}>{m.value}</div>
+                    <div style={{ color: '#6c757d', fontSize: '10px', marginTop: '3px' }}>{m.label}</div>
+                  </div>
+                ))}
+              </div>
+              {/* 设备列表 */}
+              {summary.devices?.map(d => (
+                <div key={d.alias} style={{ ...S.card, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ color: '#e0e0e0', fontWeight: '700', fontSize: '13px' }}>{d.name || d.alias}</div>
+                    <div style={{ color: '#6c757d', fontSize: '11px' }}>微信: {d.wechat_contacts || 0}人 | 群消息: {d.wechat_pending || 0}条待审</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <span style={{ padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: '600', background: d.adb_connected ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.15)', color: d.adb_connected ? '#4caf50' : '#f44336' }}>{d.adb_connected ? '🔌 已连接' : '⚠️ 未连接'}</span>
+                    <button onClick={() => triggerWechat(d.alias)} style={{ padding: '3px 8px', background: 'rgba(0,217,255,0.1)', color: '#00d9ff', border: '1px solid rgba(0,217,255,0.3)', borderRadius: '5px', cursor: 'pointer', fontSize: '10px' }}>触发微信</button>
+                  </div>
+                </div>
+              ))}
+              {triggerResult && <div style={{ padding: '8px', background: 'rgba(76,175,80,0.1)', borderRadius: '6px', color: '#4caf50', fontSize: '12px', marginTop: '8px' }}>{triggerResult}</div>}
+            </>
+          )}
+        </>
+      )}
+
+      {/* 设备详情 */}
+      {!loading && section === 'devices' && (
+        <div>
+          {devices.length === 0 ? <div style={{ color: '#6c757d', textAlign: 'center', padding: '30px' }}>暂无设备数据（phone-hub 可能离线）</div>
+          : devices.map(d => (
+            <div key={d.alias} style={S.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <div style={{ color: '#e0e0e0', fontWeight: '700' }}>{d.name || d.alias} <span style={{ color: '#6c757d', fontSize: '11px' }}>({d.serial})</span></div>
+                <span style={{ padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: '600', background: d.adb_connected ? 'rgba(76,175,80,0.15)' : 'rgba(244,67,54,0.15)', color: d.adb_connected ? '#4caf50' : '#f44336' }}>{d.adb_connected ? 'ADB连接' : 'ADB断开'}</span>
+              </div>
+              <div style={{ fontSize: '11px', color: '#6c757d' }}>
+                当前任务: {d.current_task || '无'} | 状态: {d.status || '未知'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 微信对话 */}
+      {!loading && section === 'wechat' && (
+        <div>
+          <div style={{ color: '#00d9ff', fontSize: '12px', fontWeight: '700', marginBottom: '10px' }}>💬 微信对话 CRM（按意向分高低排序）</div>
+          {wechat.length === 0 ? <div style={{ color: '#6c757d', textAlign: 'center', padding: '30px' }}>暂无对话数据</div>
+          : wechat.slice(0, 20).map((c, i) => (
+            <div key={i} style={S.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                <div style={{ color: '#e0e0e0', fontWeight: '600', fontSize: '13px' }}>{c.contact}</div>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  {c.score > 5 && <span style={{ padding: '1px 6px', background: 'rgba(244,67,54,0.2)', color: '#f44336', borderRadius: '4px', fontSize: '10px' }}>🔥 高意向 {c.score}</span>}
+                  {c.flagged && <span style={{ padding: '1px 6px', background: 'rgba(76,175,80,0.2)', color: '#4caf50', borderRadius: '4px', fontSize: '10px' }}>✅ 已处理</span>}
+                  <span style={{ color: '#6c757d', fontSize: '10px' }}>{c.msg_count} 条</span>
+                </div>
+              </div>
+              <div style={{ color: '#9e9e9e', fontSize: '11px' }}>{c.last_text?.slice(0, 80)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 小红书队列 */}
+      {!loading && section === 'xhs' && (
+        <div>
+          <div style={{ color: '#ff9800', fontSize: '12px', fontWeight: '700', marginBottom: '10px' }}>📕 小红书发帖队列</div>
+          {xhs.length === 0 ? <div style={{ color: '#6c757d', textAlign: 'center', padding: '30px' }}>暂无帖子</div>
+          : xhs.slice(0, 15).map((p, i) => (
+            <div key={i} style={S.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                <div style={{ color: '#e0e0e0', fontWeight: '600', fontSize: '13px' }}>{p.title?.slice(0, 40)}</div>
+                <span style={{ padding: '2px 7px', borderRadius: '4px', fontSize: '10px', fontWeight: '600', background: p.status === 'approved' ? 'rgba(76,175,80,0.2)' : p.status === 'pending' ? 'rgba(255,152,0,0.2)' : 'rgba(244,67,54,0.2)', color: p.status === 'approved' ? '#4caf50' : p.status === 'pending' ? '#ff9800' : '#f44336' }}>
+                  {p.status === 'approved' ? '✅ 已审批' : p.status === 'pending' ? '⏳ 待审' : '❌ 已拒绝'}
+                </span>
+              </div>
+              <div style={{ color: '#6c757d', fontSize: '10px' }}>{p.category} · {p.post_type} · {p.created_at?.slice(0, 10)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
 // JIMI 主脑控制面板 — 让 JIMI 成为平台中控大脑
 // ══════════════════════════════════════════════════════════════
 function JimiBrainPanel() {
@@ -1245,6 +1450,7 @@ const AIPlatform = () => {
               <button className={activeTab === 'aiChat' ? 'active' : ''} onClick={() => setActiveTab('aiChat')}>🤖 AI 助手</button>
               <button className={activeTab === 'swarmGuard' ? 'active' : ''} onClick={() => setActiveTab('swarmGuard')}>🛡️ 三机互守</button>
               <button className={activeTab === 'jimiBrain' ? 'active' : ''} onClick={() => setActiveTab('jimiBrain')} style={{background: activeTab==='jimiBrain' ? 'rgba(0,217,255,0.15)' : '', color: activeTab==='jimiBrain' ? '#00d9ff' : '', borderColor: activeTab==='jimiBrain' ? '#00d9ff' : ''}}>🧠 JIMI主脑</button>
+              <button className={activeTab === 'phoneHub' ? 'active' : ''} onClick={() => setActiveTab('phoneHub')} style={{background: activeTab==='phoneHub' ? 'rgba(76,175,80,0.15)' : '', color: activeTab==='phoneHub' ? '#4caf50' : '', borderColor: activeTab==='phoneHub' ? '#4caf50' : ''}}>📱 手机控制</button>
             </div>
      
         </div>
@@ -1726,6 +1932,11 @@ const AIPlatform = () => {
             {/* ====== JIMI 主脑 Tab ====== */}
             {activeTab === 'jimiBrain' && (
               <JimiBrainPanel />
+            )}
+
+            {/* ====== 手机控制 Tab ====== */}
+            {activeTab === 'phoneHub' && (
+              <PhoneHubPanel />
             )}
 
           </div>
