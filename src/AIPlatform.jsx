@@ -255,6 +255,47 @@ function TaskDetailModal({ task, onClose, onRefresh }) {
   );
 }
 
+function WhatsAppSection({hubGet, phoneCall, showToast, S}) {
+  const [waConvs, setWaConvs]   = React.useState([]);
+  const [waReview, setWaReview] = React.useState([]);
+  const [waTab, setWaTab]       = React.useState('review');
+  React.useEffect(()=>{
+    hubGet('/api/whatsapp/conversations').then(d=>setWaConvs(Array.isArray(d)?d:[])).catch(()=>{});
+    hubGet('/api/whatsapp/review').then(d=>setWaReview(Array.isArray(d)?d:[])).catch(()=>{});
+  },[]);
+  return (
+    <div>
+      <div style={{display:'flex',gap:'6px',marginBottom:'10px'}}>
+        {[{id:'review',label:`⏳ 待审批 (${waReview.length})`},{id:'convs',label:`💬 对话 (${waConvs.length})`}].map(t=>(
+          <button key={t.id} onClick={()=>setWaTab(t.id)} style={{padding:'5px 12px',borderRadius:'6px',fontSize:'11px',cursor:'pointer',border:'1px solid',fontWeight:'600',borderColor:waTab===t.id?'#bb86fc':'#30363d',background:waTab===t.id?'rgba(187,134,252,0.15)':'#0d1117',color:waTab===t.id?'#bb86fc':'#6c757d'}}>{t.label}</button>
+        ))}
+      </div>
+      {waTab==='review' && (waReview.length===0
+        ? <div style={{color:'#6c757d',textAlign:'center',padding:'30px'}}>✅ 无待审批回复</div>
+        : waReview.map((r,i)=>(
+          <div key={i} style={{background:'#0d1117',border:'1px solid rgba(187,134,252,0.3)',borderRadius:'10px',padding:'14px 16px',marginBottom:'8px'}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:'6px'}}>
+              <span style={{color:'#bb86fc',fontWeight:'700'}}>{r.contact}</span>
+              <span style={{color:'#6c757d',fontSize:'11px'}}>[{r.device_alias||r.device_name}]</span>
+            </div>
+            <div style={{padding:'6px 10px',background:'rgba(255,255,255,0.04)',borderRadius:'6px',color:'#9e9e9e',fontSize:'11px',marginBottom:'8px'}}>{r.draft_reply?.slice(0,150)}</div>
+            <button onClick={()=>phoneCall('/api/whatsapp/review/approve',{alias:r.device_alias,contact:r.contact,reply:r.draft_reply,lang:r.lang||'es'}).then(d=>{if(d.ok)showToast('✅ WA回复已发送');})} style={{...S.btn('#bb86fc','rgba(187,134,252,0.15)'),width:'100%',padding:'7px'}}>📲 发送回复</button>
+          </div>
+        ))
+      )}
+      {waTab==='convs' && (waConvs.length===0
+        ? <div style={{color:'#6c757d',textAlign:'center',padding:'30px'}}>暂无对话记录</div>
+        : waConvs.map((c,i)=>(
+          <div key={i} style={{background:'#0d1117',border:'1px solid #21262d',borderRadius:'8px',padding:'10px 14px',marginBottom:'6px'}}>
+            <div style={{color:'#e0e0e0',fontWeight:'600'}}>{c.contact}</div>
+            <div style={{color:'#6c757d',fontSize:'11px'}}>{c.msg_count} 条消息 · {c.messages?.[0]?.created_at?.slice(0,10)||''}</div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════
 // 手机控制面板 — phone-hub 独立运行，平台做代理展示
 // ══════════════════════════════════════════════════════════════
@@ -291,14 +332,15 @@ function PhoneHubPanel() {
 
   const fetchAll = () => {
     fetch('/api/phone/status').then(r=>r.json()).then(d=>setHubs(d.hubs||[])).catch(()=>{});
-    hubGet('/api/summary').then(d=>{setSummary(d||null);setLoading(false);}).catch(()=>setLoading(false));
-    hubGet('/api/status').then(d=>setDevices(d.devices||[])).catch(()=>{});
+    // /api/status 返回完整设备状态（含任务PID/running）
+    hubGet('/api/status').then(d=>{setDevices(d.devices||[]);setLoading(false);}).catch(()=>setLoading(false));
   };
   const fetchWechat = () => {
     hubGet('/api/wechat/conversations').then(d=>setWechat(Array.isArray(d)?d:[])).catch(()=>{});
     hubGet('/api/wechat/groups').then(d=>setGroups(Array.isArray(d)?d:[])).catch(()=>{});
   };
   const fetchXhs = () => {
+    // 显示所有帖子，不只是 pending
     hubGet('/api/xhs/queue').then(d=>{
       setXhs(Array.isArray(d) ? d : (d?.posts || []));
     }).catch(()=>{});
@@ -315,15 +357,22 @@ function PhoneHubPanel() {
 
   const mainHub = hubs[0];
   const pendingGroups = groups.filter(g=>g.status!=='rejected'&&g.status!=='sent'&&g.status!=='send_requested');
-  const pendingXhs = xhs.filter(p=>p.status==='pending');
+  const pendingXhs    = xhs.filter(p=>p.status==='pending');
+
+  // 从 devices 直接算汇总（无需额外 summary 接口）
+  const adbOnline     = devices.filter(d=>d.adb_connected).length;
+  const totalWechat   = devices.reduce((s,d)=>s+(d.wechat_contacts||0),0);
+  const totalWaPending = devices.reduce((s,d)=>s+(d.whatsapp_review||0),0);
+  const hasWhatsApp   = devices.some(d=>d.continuous_tasks?.some(t=>t.name==='whatsapp'));
 
   const tabs = [
     {id:'overview', label:'📊 总览'},
     {id:'devices',  label:`📱 设备 (${devices.length})`},
-    {id:'wechat',   label:`💬 微信CRM (${wechat.length})`},
-    {id:'groups',   label:`👥 群消息审批 ${pendingGroups.length>0?`(${pendingGroups.length})`:''}`},
-    {id:'xhs',      label:`📕 小红书 ${pendingXhs.length>0?`(待审${pendingXhs.length})`:''}`},
-  ];
+    {id:'wechat',   label:`💬 微信CRM (${wechat.length||totalWechat})`},
+    {id:'groups',   label:`👥 群消息审批${pendingGroups.length>0?' ('+pendingGroups.length+')':''}`},
+    hasWhatsApp && {id:'whatsapp', label:`📲 WhatsApp${totalWaPending>0?' ('+totalWaPending+')':''}`},
+    {id:'xhs',      label:`📕 小红书 (${xhs.length})`},
+  ].filter(Boolean);
 
   // ── 操作函数 ─────────────────────────────────────────────────────────────
 
@@ -407,63 +456,106 @@ function PhoneHubPanel() {
       {!mainHub?.online && !loading && <div style={{padding:'10px 14px',background:'rgba(244,67,54,0.1)',border:'1px solid rgba(244,67,54,0.3)',borderRadius:'8px',color:'#f44336',fontSize:'12px',marginBottom:'12px'}}>❌ phone-hub 离线 — 请运行：<code style={{color:'#ff9800'}}>cd 脚本/phone-hub && python3 main.py --port 5050</code></div>}
 
       {/* ── 总览 ── */}
-      {!loading && section==='overview' && summary && (
+      {!loading && section==='overview' && (
         <>
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px',marginBottom:'12px'}}>
             {[
-              {label:'ADB在线',value:summary.devices?.filter(d=>d.adb_connected).length||0,color:'#4caf50'},
-              {label:'微信联系人',value:wechat.length||summary.devices?.reduce((s,d)=>s+(d.wechat_contacts||0),0)||0,color:'#00d9ff'},
-              {label:'群消息待审',value:pendingGroups.length,color:'#ff9800'},
-              {label:'XHS待审批',value:pendingXhs.length,color:'#bb86fc'},
+              {label:'ADB在线',     value:adbOnline,           color:'#4caf50'},
+              {label:'微信联系人',  value:totalWechat,         color:'#00d9ff'},
+              {label:'群消息待审',  value:pendingGroups.length, color:'#ff9800'},
+              {label:'XHS总帖子',   value:xhs.length||'—',    color:'#bb86fc'},
             ].map(m=>(
-              <div key={m.label} style={{...S.card,textAlign:'center',marginBottom:0}}>
+              <div key={m.label} style={{...S.card,textAlign:'center',marginBottom:0,cursor:'default'}}>
                 <div style={{color:m.color,fontSize:'22px',fontWeight:'800'}}>{m.value}</div>
                 <div style={{color:'#6c757d',fontSize:'10px',marginTop:'2px'}}>{m.label}</div>
               </div>
             ))}
           </div>
-          {summary.devices?.map(d=>(
-            <div key={d.alias} style={S.card}>
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-                <div>
-                  <div style={{color:'#e0e0e0',fontWeight:'700',fontSize:'13px'}}>{d.name||d.alias}</div>
-                  <div style={{color:'#6c757d',fontSize:'11px',marginTop:'3px'}}>
-                    微信: {d.wechat_contacts}人 · 群消息待审: {d.wechat_pending}条 · 任务: {d.current_task||'无'}
+          {devices.map(d=>{
+            const cts = d.continuous_tasks||[];
+            const pts = d.periodic_tasks||[];
+            const hasWa = cts.some(t=>t.name==='whatsapp');
+            return (
+              <div key={d.alias} style={S.card}>
+                <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between'}}>
+                  <div style={{flex:1}}>
+                    <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'5px'}}>
+                      <span style={{color:'#e0e0e0',fontWeight:'700',fontSize:'13px'}}>{d.name||d.alias}</span>
+                      <span style={{padding:'2px 7px',borderRadius:'10px',fontSize:'10px',fontWeight:'600',background:d.adb_connected?'rgba(76,175,80,0.15)':'rgba(244,67,54,0.15)',color:d.adb_connected?'#4caf50':'#f44336'}}>{d.adb_connected?'🔌 ADB在线':'⚠️ ADB断开'}</span>
+                    </div>
+                    {/* 任务运行状态（和 phone-hub 原版一致） */}
+                    <div style={{display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'5px'}}>
+                      {cts.map(t=>(
+                        <span key={t.name} style={{fontSize:'11px',padding:'2px 6px',borderRadius:'4px',background:t.running?'rgba(76,175,80,0.12)':'rgba(244,67,54,0.12)',color:t.running?'#4caf50':'#f44336',border:`1px solid ${t.running?'rgba(76,175,80,0.3)':'rgba(244,67,54,0.3)'}`}}>
+                          {t.name} {t.running?`● PID ${t.pid}`:'○ 已停止'}
+                        </span>
+                      ))}
+                      {pts.map(t=>(
+                        <span key={t.name} style={{fontSize:'11px',padding:'2px 6px',borderRadius:'4px',background:'rgba(255,152,0,0.12)',color:'#ff9800',border:'1px solid rgba(255,152,0,0.3)'}}>
+                          {t.name} ⏰
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{color:'#6c757d',fontSize:'11px'}}>
+                      微信: {d.wechat_contacts}人 · 群待审: {d.wechat_pending}条
+                      {hasWa ? ` · WA待审: ${d.whatsapp_review||0}条` : ''}
+                    </div>
+                  </div>
+                  <div style={{display:'flex',gap:'5px',flexWrap:'wrap',justifyContent:'flex-end',minWidth:'140px'}}>
+                    <button onClick={()=>triggerWechat(d.alias)} style={S.btnSm('#00d9ff')}>💬 抓微信</button>
+                    <button onClick={()=>restartTask(d.alias,'wechat')} style={S.btnSm('#ff9800')}>🔄 重启</button>
+                    {hasWa && <button onClick={()=>restartTask(d.alias,'whatsapp')} style={S.btnSm('#bb86fc')}>📲 WA</button>}
+                    {pts.some(t=>t.name==='xhs_post') && <button onClick={()=>triggerPeriodic(d.alias,'xhs_post')} style={S.btnSm('#4caf50')}>📕 XHS</button>}
                   </div>
                 </div>
-                <div style={{display:'flex',gap:'6px',flexWrap:'wrap',justifyContent:'flex-end'}}>
-                  <span style={{padding:'2px 7px',borderRadius:'10px',fontSize:'10px',fontWeight:'600',background:d.adb_connected?'rgba(76,175,80,0.15)':'rgba(244,67,54,0.15)',color:d.adb_connected?'#4caf50':'#f44336'}}>{d.adb_connected?'🔌 ADB在线':'⚠️ ADB断开'}</span>
-                  <button onClick={()=>triggerWechat(d.alias)} style={S.btnSm('#00d9ff')}>💬 抓取微信</button>
-                  <button onClick={()=>restartTask(d.alias,'wechat')} style={S.btnSm('#ff9800')}>🔄 重启微信bot</button>
-                  {d.tasks?.whatsapp?.enabled && <button onClick={()=>triggerWechat(d.alias)} style={S.btnSm('#bb86fc')}>📲 WhatsApp</button>}
-                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </>
       )}
 
-      {/* ── 设备详情 ── */}
+      {/* ── 设备详情（和 phone-hub 原版一致，显示任务状态和PID）── */}
       {!loading && section==='devices' && (
         <div>
           {devices.length===0 ? <div style={{color:'#6c757d',textAlign:'center',padding:'30px'}}>暂无设备（phone-hub 可能离线）</div>
-          : devices.map(d=>(
-            <div key={d.alias} style={S.card}>
-              <div style={{display:'flex',justifyContent:'space-between',marginBottom:'8px'}}>
-                <div>
-                  <div style={{color:'#e0e0e0',fontWeight:'700'}}>{d.name||d.alias} <span style={{color:'#6c757d',fontSize:'11px'}}>({d.serial})</span></div>
-                  <div style={{color:'#6c757d',fontSize:'11px',marginTop:'2px'}}>任务: {d.current_task||'无'} | 状态: {d.status||'未知'}</div>
+          : devices.map(d=>{
+            const cts=d.continuous_tasks||[];
+            const pts=d.periodic_tasks||[];
+            return (
+              <div key={d.alias} style={S.card}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'10px'}}>
+                  <div>
+                    <div style={{color:'#e0e0e0',fontWeight:'700',fontSize:'13px'}}>{d.name||d.alias}</div>
+                    <div style={{color:'#6c757d',fontSize:'11px',marginTop:'1px'}}>{d.serial}</div>
+                  </div>
+                  <span style={{padding:'2px 8px',borderRadius:'10px',fontSize:'10px',fontWeight:'600',background:d.adb_connected?'rgba(76,175,80,0.15)':'rgba(244,67,54,0.15)',color:d.adb_connected?'#4caf50':'#f44336'}}>{d.adb_connected?'🔌 ADB在线':'⚠️ ADB断开'}</span>
                 </div>
-                <span style={{padding:'2px 8px',borderRadius:'10px',fontSize:'10px',fontWeight:'600',background:d.adb_connected?'rgba(76,175,80,0.15)':'rgba(244,67,54,0.15)',color:d.adb_connected?'#4caf50':'#f44336'}}>{d.adb_connected?'ADB已连':'ADB断开'}</span>
+                {/* 持续任务（wechat/whatsapp）带PID和运行状态 */}
+                {cts.map(t=>(
+                  <div key={t.name} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 10px',background:t.running?'rgba(76,175,80,0.06)':'rgba(244,67,54,0.06)',borderRadius:'6px',marginBottom:'5px',border:`1px solid ${t.running?'rgba(76,175,80,0.2)':'rgba(244,67,54,0.2)'}`}}>
+                    <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                      <span style={{width:'8px',height:'8px',borderRadius:'50%',background:t.running?'#4caf50':'#f44336',display:'inline-block'}}/>
+                      <span style={{color:'#e0e0e0',fontSize:'12px',fontWeight:'600'}}>{t.name}</span>
+                      {t.running && t.pid && <span style={{color:'#6c757d',fontSize:'10px'}}>PID {t.pid}</span>}
+                      {!t.running && <span style={{color:'#f44336',fontSize:'10px'}}>已停止</span>}
+                    </div>
+                    <button onClick={()=>restartTask(d.alias,t.name)} style={S.btnSm('#ff9800')}>🔄 重启</button>
+                  </div>
+                ))}
+                {/* 定时任务（xhs_post）*/}
+                {pts.map(t=>(
+                  <div key={t.name} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 10px',background:'rgba(255,152,0,0.06)',borderRadius:'6px',marginBottom:'5px',border:'1px solid rgba(255,152,0,0.2)'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                      <span style={{color:'#ff9800',fontSize:'12px'}}>⏰</span>
+                      <span style={{color:'#e0e0e0',fontSize:'12px',fontWeight:'600'}}>{t.name}</span>
+                      <span style={{color:'#6c757d',fontSize:'10px'}}>定时任务</span>
+                    </div>
+                    <button onClick={()=>triggerPeriodic(d.alias,t.name)} style={S.btnSm('#4caf50')}>▶ 立即触发</button>
+                  </div>
+                ))}
               </div>
-              <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
-                <button onClick={()=>triggerWechat(d.alias)} style={S.btnSm('#00d9ff')}>💬 触发微信</button>
-                <button onClick={()=>restartTask(d.alias,'wechat')} style={S.btnSm('#ff9800')}>🔄 重启微信bot</button>
-                <button onClick={()=>triggerPeriodic(d.alias,'xhs_post')} style={S.btnSm('#bb86fc')}>📕 触发XHS发帖</button>
-                <button onClick={()=>restartTask(d.alias,'whatsapp')} style={S.btnSm('#4caf50')}>📲 重启WA bot</button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -548,43 +640,56 @@ function PhoneHubPanel() {
         </div>
       )}
 
-      {/* ── 小红书 ── */}
+      {/* ── WhatsApp（抽成子组件避免 hooks 规则问题）── */}
+      {!loading && section==='whatsapp' && (
+        <WhatsAppSection hubGet={hubGet} phoneCall={phoneCall} showToast={showToast} S={S} />
+      )}
+
+      {/* ── 小红书（显示全部，含已发布/已拒绝）── */}
       {!loading && section==='xhs' && (
         <div>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px'}}>
-            <div style={{color:'#bb86fc',fontSize:'12px',fontWeight:'700'}}>📕 小红书发帖队列</div>
+            <div style={{display:'flex',gap:'6px',alignItems:'center'}}>
+              <div style={{color:'#bb86fc',fontSize:'12px',fontWeight:'700'}}>📕 小红书发帖队列</div>
+              {/* 状态统计 */}
+              {[['posted','#4caf50','已发布'],['pending','#ff9800','待审'],['rejected','#f44336','已拒绝'],['failed','#6c757d','失败']].map(([s,c,l])=>{
+                const n=xhs.filter(p=>p.status===s).length;
+                return n>0 ? <span key={s} style={{fontSize:'10px',padding:'1px 6px',borderRadius:'4px',background:`rgba(${c==='#4caf50'?'76,175,80':c==='#ff9800'?'255,152,0':c==='#f44336'?'244,67,54':'108,117,125'},0.15)`,color:c}}>{l} {n}</span> : null;
+              })}
+            </div>
             <div style={{display:'flex',gap:'6px'}}>
-              <button onClick={generateXhs} disabled={genLoading} style={S.btn('#bb86fc','rgba(187,134,252,0.1)')}>
-                {genLoading?'⏳ 生成中...':'✨ AI生成帖子'}
-              </button>
+              <button onClick={generateXhs} disabled={genLoading} style={S.btn('#bb86fc','rgba(187,134,252,0.1)')}>{genLoading?'⏳ 生成中...':'✨ AI生成'}</button>
               <button onClick={()=>triggerXhsPost('oppo')} style={S.btn('#ff9800','rgba(255,152,0,0.1)')}>📤 触发发布</button>
               <button onClick={fetchXhs} style={S.btn('#6c757d')}>🔄</button>
             </div>
           </div>
-          {xhs.length===0 ? <div style={{color:'#6c757d',textAlign:'center',padding:'30px'}}>暂无帖子，点「AI生成帖子」创建</div>
-          : xhs.slice(0,20).map((p,i)=>(
-            <div key={i} style={{...S.card,borderColor:p.status==='approved'?'rgba(76,175,80,0.3)':p.status==='pending'?'rgba(255,152,0,0.3)':'#21262d'}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'6px'}}>
-                <div style={{flex:1}}>
-                  <div style={{color:'#e0e0e0',fontWeight:'700',fontSize:'13px'}}>{p.title?.slice(0,50)}</div>
-                  <div style={{color:'#6c757d',fontSize:'10px',marginTop:'2px'}}>{p.category} · {p.post_type} · {p.created_at?.slice(0,10)}</div>
+          {xhs.length===0
+            ? <div style={{color:'#6c757d',textAlign:'center',padding:'30px'}}>暂无帖子，点「AI生成」创建</div>
+            : xhs.map((p,i)=>{
+              const statusMap = {posted:{c:'#4caf50',l:'✅ 已发布'}, pending:{c:'#ff9800',l:'⏳ 待审批'}, approved:{c:'#00d9ff',l:'🕐 等待发布'}, rejected:{c:'#f44336',l:'❌ 已拒绝'}, failed:{c:'#6c757d',l:'💀 失败'}, published:{c:'#4caf50',l:'✅ 已发布'}};
+              const st = statusMap[p.status] || {c:'#6c757d',l:p.status};
+              return (
+                <div key={i} style={{...S.card,borderColor:p.status==='pending'?'rgba(255,152,0,0.4)':p.status==='posted'||p.status==='published'?'rgba(76,175,80,0.2)':'#21262d'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'4px'}}>
+                    <div style={{color:'#e0e0e0',fontWeight:'700',fontSize:'12px',flex:1}}>{p.title?.slice(0,50)}</div>
+                    <span style={{padding:'2px 7px',borderRadius:'4px',fontSize:'10px',fontWeight:'700',marginLeft:'8px',color:st.c,background:st.c+'22'}}>{st.l}</span>
+                  </div>
+                  <div style={{color:'#6c757d',fontSize:'10px',marginBottom: p.status==='pending'?'8px':'0'}}>
+                    {p.category} · {p.post_type} · {(p.posted_at||p.created_at||'').slice(0,10)}
+                  </div>
+                  {p.status==='pending' && (
+                    <div style={{display:'flex',gap:'6px'}}>
+                      <button onClick={()=>approveXhs(p.id)} style={{...S.btn('#4caf50','rgba(76,175,80,0.15)'),flex:1,padding:'5px'}}>✅ 审批</button>
+                      <button onClick={()=>rejectXhs(p.id)} style={{...S.btn('#f44336','rgba(244,67,54,0.1)'),padding:'5px 12px'}}>❌ 拒绝</button>
+                    </div>
+                  )}
+                  {(p.status==='approved') && (
+                    <button onClick={()=>triggerXhsPost('oppo')} style={{...S.btn('#4caf50','rgba(76,175,80,0.1)'),width:'100%',padding:'5px'}}>📤 立即触发发布</button>
+                  )}
                 </div>
-                <span style={{padding:'2px 8px',borderRadius:'4px',fontSize:'10px',fontWeight:'700',marginLeft:'8px',background:p.status==='approved'?'rgba(76,175,80,0.2)':p.status==='pending'?'rgba(255,152,0,0.2)':'rgba(244,67,54,0.2)',color:p.status==='approved'?'#4caf50':p.status==='pending'?'#ff9800':'#f44336'}}>
-                  {p.status==='approved'?'✅ 已审批':p.status==='pending'?'⏳ 待审批':'❌ 已拒绝'}
-                </span>
-              </div>
-              {p.body && <div style={{color:'#9e9e9e',fontSize:'11px',marginBottom:'8px',maxHeight:'60px',overflow:'hidden'}}>{p.body?.slice(0,150)}</div>}
-              {p.status==='pending' && (
-                <div style={{display:'flex',gap:'6px'}}>
-                  <button onClick={()=>approveXhs(p.id)} style={{...S.btn('#4caf50','rgba(76,175,80,0.15)'),flex:1,padding:'6px'}}>✅ 审批</button>
-                  <button onClick={()=>rejectXhs(p.id)} style={{...S.btn('#f44336','rgba(244,67,54,0.1)'),padding:'6px 12px'}}>❌ 拒绝</button>
-                </div>
-              )}
-              {p.status==='approved' && (
-                <div style={{fontSize:'11px',color:'#4caf50'}}>已批准，等待手机自动发布 · <button onClick={()=>triggerXhsPost('oppo')} style={{...S.btnSm('#4caf50'),marginLeft:'4px'}}>立即触发</button></div>
-              )}
-            </div>
-          ))}
+              );
+            })
+          }
         </div>
       )}
     </div>
