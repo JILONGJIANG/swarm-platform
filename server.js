@@ -17,7 +17,7 @@ const { execSync } = require('child_process');
 
 const app = express();
 app.use(express.json());
-const PORT = process.env.PORT || 18899;
+const PORT = process.env.PORT || 18800;
 
 // ============================================
 // 实时消息中心（SSE + 消息存储）
@@ -1627,6 +1627,175 @@ app.get('/api/node/:id/status', (req, res) => {
     ts: Date.now()
   });
 });
+// ══════════════════════════════════════════════════════════════
+// JIMI 主脑桥接层（2026-04-29 接入）
+// 让 JIMI 成为平台的中控大脑：接收指令、管理分身、自我升级
+// ══════════════════════════════════════════════════════════════
+const JIMI_BASE = process.env.JIMI_BASE_URL || 'http://192.168.1.110:5002';
+
+// 通用 HTTP 请求工具（兼容 Node 16/18，不依赖 fetch）
+function httpRequest(urlStr, method = 'GET', body = null, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlStr);
+    const options = {
+      hostname: url.hostname,
+      port: url.port || 80,
+      path: url.pathname + url.search,
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      timeout: timeoutMs,
+    };
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode, body: data }); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+// JIMI 健康状态缓存（15 秒轮询）
+let jimiStatus = { status: 'unknown', brain: {}, curator: {}, agent: {}, ts: null };
+async function probeJimi() {
+  try {
+    const r = await httpRequest(`${JIMI_BASE}/health`, 'GET', null, 4000);
+    if (r.status < 400) {
+      jimiStatus = {
+        status: 'online',
+        health: r.body,
+        ts: Date.now(),
+      };
+    } else {
+      jimiStatus = { status: 'offline', ts: Date.now() };
+    }
+  } catch {
+    jimiStatus = { status: 'offline', ts: Date.now() };
+  }
+}
+probeJimi();
+setInterval(probeJimi, 15000);
+
+// GET /api/jimi/status — JIMI 完整状态（聚合三个子端点）
+app.get('/api/jimi/status', async (req, res) => {
+  try {
+    const [brain, curator, agent] = await Promise.allSettled([
+      httpRequest(`${JIMI_BASE}/api/brain/stats`),
+      httpRequest(`${JIMI_BASE}/api/curator/status`),
+      httpRequest(`${JIMI_BASE}/api/agent/status`),
+    ]);
+    res.json({
+      ok: true,
+      online: jimiStatus.status === 'online',
+      health: jimiStatus.health || {},
+      brain:  brain.status  === 'fulfilled' ? (brain.value.body?.stats   || {}) : {},
+      curator: curator.status === 'fulfilled' ? (curator.value.body?.data || {}) : {},
+      agent:  agent.status  === 'fulfilled' ? (agent.value.body?.data   || {}) : {},
+      jimi_base: JIMI_BASE,
+      ts: Date.now(),
+    });
+  } catch (e) {
+    res.json({ ok: false, error: e.message, online: false });
+  }
+});
+
+// POST /api/jimi/command — 通过 JIMI 主脑下达自然语言指令
+// JIMI 自动接入 ERP 大脑、Curator 技能库后回复
+app.post('/api/jimi/command', async (req, res) => {
+  const { message, user_id = 'swarm-platform' } = req.body;
+  if (!message) return res.status(400).json({ ok: false, error: 'message 必填' });
+  try {
+    const r = await httpRequest(`${JIMI_BASE}/api/chat`, 'POST', { message, user_id }, 30000);
+    const reply = r.body?.reply || r.body?.error || '无回复';
+    const model  = r.body?.model_used || 'unknown';
+    // 广播 JIMI 回复到平台消息流（所有连接的浏览器实时收到）
+    addMessage({ from: '🧠 JIMI主脑', role: 'brain', content: reply, type: 'jimi' });
+    res.json({ ok: true, reply, model, brain_context: r.body?.brain_context_count || 0 });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/jimi/task — 让 JIMI 给指定分身布置任务（自然语言）
+app.post('/api/jimi/task', async (req, res) => {
+  const { email, task } = req.body;
+  if (!email || !task) return res.status(400).json({ ok: false, error: 'email 和 task 必填' });
+  try {
+    // 先确保会话存在
+    await httpRequest(`${JIMI_BASE}/api/agent/session`, 'POST', { email }, 5000);
+    // 提交任务
+    const r = await httpRequest(`${JIMI_BASE}/api/agent/task`, 'POST', { email, task }, 10000);
+    const data = r.body?.data || {};
+    addMessage({
+      from: '🧠 JIMI主脑',
+      role: 'brain',
+      content: `📋 已向 ${email} 分配任务: ${task.slice(0, 60)}${task.length > 60 ? '…' : ''}`,
+      type: 'task',
+    });
+    res.json({ ok: true, task_id: data.task_id, status: data.status, novnc_url: data.novnc_url });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/jimi/agents — JIMI 管理的分身会话列表
+app.get('/api/jimi/agents', async (req, res) => {
+  try {
+    const r = await httpRequest(`${JIMI_BASE}/api/agent/sessions`);
+    res.json({ ok: true, sessions: r.body?.data || [], total: r.body?.total || 0 });
+  } catch (e) {
+    res.json({ ok: false, error: e.message, sessions: [] });
+  }
+});
+
+// GET /api/jimi/skills — JIMI 技能库（Curator 自动生成）
+app.get('/api/jimi/skills', async (req, res) => {
+  try {
+    const r = await httpRequest(`${JIMI_BASE}/api/curator/skills`);
+    res.json({ ok: true, skills: r.body?.data || [], total: r.body?.total || 0 });
+  } catch (e) {
+    res.json({ ok: false, error: e.message, skills: [] });
+  }
+});
+
+// POST /api/jimi/curator/run — 手动触发 JIMI 自我升级审查
+app.post('/api/jimi/curator/run', async (req, res) => {
+  try {
+    const r = await httpRequest(`${JIMI_BASE}/api/curator/run`, 'POST', { force: true }, 5000);
+    addMessage({ from: '🧠 JIMI主脑', role: 'brain', content: '🔄 Curator 自我升级审查已触发（后台运行）', type: 'system' });
+    res.json({ ok: true, message: 'Curator 已在后台启动' });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 更新净化流程，新增 JIMI 主脑健康检查
+app.post('/api/upgrade/purge-with-jimi', async (req, res) => {
+  const { from_queen } = req.body;
+  const results = {};
+  const services = [
+    { name: 'ERP后端',   url: 'http://127.0.0.1:3010/apiData/ClientList' },
+    { name: '任务平台',  url: 'http://127.0.0.1:18800/api/rules' },
+    { name: 'OpenClaw', url: 'http://127.0.0.1:18789/health' },
+    { name: 'JIMI主脑', url: `${JIMI_BASE}/health` },
+  ];
+  for (const svc of services) {
+    try {
+      const r = await httpRequest(svc.url, 'GET', null, 3000);
+      results[svc.name] = r.status < 400 ? '✅ 正常' : `⚠️ ${r.status}`;
+    } catch { results[svc.name] = '❌ 不可达'; }
+  }
+  addMessage({ from: '🧹 净化系统', role: 'system', content: Object.entries(results).map(([k,v])=>`${k}: ${v}`).join(' | '), type: 'purge' });
+  res.json({ ok: true, results, from_queen });
+});
+
+console.log('✅ JIMI 主脑桥接层已集成 (/api/jimi/*)');
+
 // API 定义结束
 
 app.listen(PORT, '0.0.0.0', () => {

@@ -255,6 +255,284 @@ function TaskDetailModal({ task, onClose, onRefresh }) {
   );
 }
 
+// ══════════════════════════════════════════════════════════════
+// JIMI 主脑控制面板 — 让 JIMI 成为平台中控大脑
+// ══════════════════════════════════════════════════════════════
+function JimiBrainPanel() {
+  const [status, setStatus]       = React.useState(null);
+  const [loading, setLoading]     = React.useState(true);
+  const [cmdInput, setCmdInput]   = React.useState('');
+  const [cmdReply, setCmdReply]   = React.useState('');
+  const [cmdLoading, setCmdLoading] = React.useState(false);
+  const [skills, setSkills]       = React.useState([]);
+  const [agents, setAgents]       = React.useState([]);
+  const [taskEmail, setTaskEmail] = React.useState('');
+  const [taskDesc, setTaskDesc]   = React.useState('');
+  const [taskResult, setTaskResult] = React.useState('');
+  const [activeSection, setActiveSection] = React.useState('overview');
+
+  const fetchStatus = () => {
+    setLoading(true);
+    fetch('/api/jimi/status')
+      .then(r => r.json())
+      .then(d => { setStatus(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  };
+
+  const fetchSkills = () => {
+    fetch('/api/jimi/skills').then(r => r.json()).then(d => setSkills(d.skills || [])).catch(() => {});
+  };
+
+  const fetchAgents = () => {
+    fetch('/api/jimi/agents').then(r => r.json()).then(d => setAgents(d.sessions || [])).catch(() => {});
+  };
+
+  React.useEffect(() => {
+    fetchStatus();
+    fetchSkills();
+    fetchAgents();
+    const t = setInterval(() => { fetchStatus(); fetchAgents(); }, 15000);
+    return () => clearInterval(t);
+  }, []);
+
+  const sendCommand = () => {
+    if (!cmdInput.trim()) return;
+    setCmdLoading(true);
+    setCmdReply('');
+    fetch('/api/jimi/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: cmdInput, user_id: 'swarm-platform' }),
+    })
+      .then(r => r.json())
+      .then(d => { setCmdReply(d.reply || d.error || '无回复'); setCmdLoading(false); })
+      .catch(e => { setCmdReply('❌ 连接失败: ' + e.message); setCmdLoading(false); });
+  };
+
+  const assignTask = () => {
+    if (!taskEmail.trim() || !taskDesc.trim()) return;
+    setTaskResult('提交中...');
+    fetch('/api/jimi/task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: taskEmail, task: taskDesc }),
+    })
+      .then(r => r.json())
+      .then(d => setTaskResult(d.ok ? `✅ 任务已提交: ${d.task_id}` : `❌ ${d.error}`))
+      .catch(e => setTaskResult('❌ 连接失败: ' + e.message));
+  };
+
+  const triggerCurator = () => {
+    fetch('/api/jimi/curator/run', { method: 'POST' })
+      .then(r => r.json())
+      .then(d => setCmdReply(d.ok ? '✅ Curator 自我升级已触发，后台运行中...' : '❌ ' + d.error))
+      .catch(e => setCmdReply('❌ ' + e.message));
+  };
+
+  const S = { pad: { padding: '16px' }, card: { background: '#0d1117', border: '1px solid #21262d', borderRadius: '10px', padding: '14px 16px', marginBottom: '12px' }, label: { color: '#6c757d', fontSize: '11px', marginBottom: '4px' }, val: { color: '#e0e0e0', fontSize: '15px', fontWeight: '700' }, cyan: { color: '#00d9ff' }, green: { color: '#4caf50' }, red: { color: '#f44336' }, orange: { color: '#ff9800' } };
+
+  const online = status?.online;
+  const brain = status?.brain || {};
+  const curator = status?.curator || {};
+  const agent = status?.agent || {};
+
+  const tabs = [
+    { id: 'overview', label: '📊 总览' },
+    { id: 'command',  label: '💬 下达指令' },
+    { id: 'skills',   label: `🧩 技能库 (${curator.skill_stats?.active || 0})` },
+    { id: 'agents',   label: `🤖 分身 (${agent.sessions?.total || 0})` },
+    { id: 'assign',   label: '📋 分配任务' },
+  ];
+
+  return (
+    <div style={S.pad}>
+      {/* 状态头部 */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <span style={{ fontSize: '28px' }}>🧠</span>
+          <div>
+            <div style={{ color: '#e0e0e0', fontSize: '16px', fontWeight: '800' }}>JIMI 主脑控制中心</div>
+            <div style={{ color: '#6c757d', fontSize: '11px' }}>中控大脑 · ERP智能体 · 自我升级系统</div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: online ? '#4caf50' : '#f44336', boxShadow: online ? '0 0 8px #4caf50' : 'none' }} />
+          <span style={{ color: online ? '#4caf50' : '#f44336', fontSize: '13px', fontWeight: '700' }}>{online ? '在线' : '离线'}</span>
+          <button onClick={fetchStatus} style={{ padding: '4px 10px', background: 'rgba(0,217,255,0.1)', color: '#00d9ff', border: '1px solid rgba(0,217,255,0.3)', borderRadius: '6px', cursor: 'pointer', fontSize: '11px' }}>🔄</button>
+        </div>
+      </div>
+
+      {/* 子标签页 */}
+      <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', flexWrap: 'wrap' }}>
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setActiveSection(t.id)} style={{ padding: '5px 12px', borderRadius: '6px', fontSize: '11px', cursor: 'pointer', border: '1px solid', fontWeight: '600', borderColor: activeSection === t.id ? '#00d9ff' : '#30363d', background: activeSection === t.id ? 'rgba(0,217,255,0.15)' : '#0d1117', color: activeSection === t.id ? '#00d9ff' : '#6c757d' }}>{t.label}</button>
+        ))}
+      </div>
+
+      {loading && <div style={{ color: '#6c757d', textAlign: 'center', padding: '40px' }}>⏳ 连接 JIMI 主脑...</div>}
+
+      {!loading && activeSection === 'overview' && (
+        <>
+          {/* 3 列核心指标 */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '10px', marginBottom: '12px' }}>
+            {[
+              { label: '大脑知识', value: brain.knowledge_total || 0, unit: '条', color: '#00d9ff' },
+              { label: '对话记录', value: brain.chats_total || 0,    unit: '条', color: '#bb86fc' },
+              { label: '自动技能', value: curator.skill_stats?.active || 0, unit: '个', color: '#4caf50' },
+            ].map(m => (
+              <div key={m.label} style={{ ...S.card, textAlign: 'center' }}>
+                <div style={{ color: m.color, fontSize: '24px', fontWeight: '800' }}>{m.value}<span style={{ fontSize: '12px', marginLeft: '2px' }}>{m.unit}</span></div>
+                <div style={{ color: '#6c757d', fontSize: '10px', marginTop: '2px' }}>{m.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Curator 状态 */}
+          <div style={S.card}>
+            <div style={{ color: '#00d9ff', fontSize: '12px', fontWeight: '700', marginBottom: '8px' }}>🔄 Curator 自我升级状态</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '12px' }}>
+              <div><span style={S.label}>运行次数</span><div style={{ color: '#e0e0e0' }}>{curator.run_count || 0} 次</div></div>
+              <div><span style={S.label}>上次运行</span><div style={{ color: '#e0e0e0' }}>{curator.last_run_at ? curator.last_run_at.slice(0, 16) : '未运行'}</div></div>
+              <div><span style={S.label}>下次运行</span><div style={{ color: '#ff9800' }}>{curator.next_run_in_hours || 24} 小时后</div></div>
+              <div><span style={S.label}>技能库</span><div style={{ color: '#4caf50' }}>{curator.skill_stats?.active || 0} 活跃 / {curator.skill_stats?.total || 0} 总</div></div>
+            </div>
+            {curator.last_summary && <div style={{ marginTop: '8px', padding: '6px 10px', background: 'rgba(0,217,255,0.05)', borderRadius: '6px', color: '#9e9e9e', fontSize: '11px' }}>上次总结：{curator.last_summary}</div>}
+            <button onClick={triggerCurator} style={{ marginTop: '10px', padding: '6px 16px', background: 'rgba(0,217,255,0.1)', color: '#00d9ff', border: '1px solid rgba(0,217,255,0.3)', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}>🔄 立即触发自我升级</button>
+          </div>
+
+          {/* 分身会话统计 */}
+          <div style={S.card}>
+            <div style={{ color: '#bb86fc', fontSize: '12px', fontWeight: '700', marginBottom: '8px' }}>🤖 分身会话（JIMI Agent）</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '8px', fontSize: '12px', textAlign: 'center' }}>
+              <div><div style={{ color: '#00d9ff', fontSize: '20px', fontWeight: '800' }}>{agent.sessions?.total || 0}</div><div style={{ color: '#6c757d', fontSize: '10px' }}>总会话</div></div>
+              <div><div style={{ color: '#ff9800', fontSize: '20px', fontWeight: '800' }}>{agent.sessions?.busy || 0}</div><div style={{ color: '#6c757d', fontSize: '10px' }}>执行中</div></div>
+              <div><div style={{ color: '#4caf50', fontSize: '20px', fontWeight: '800' }}>{agent.sessions?.idle || 0}</div><div style={{ color: '#6c757d', fontSize: '10px' }}>空闲</div></div>
+            </div>
+          </div>
+
+          {/* ERP 数据库 */}
+          {brain.erp_tables && brain.erp_tables.length > 0 && (
+            <div style={S.card}>
+              <div style={{ color: '#ff9800', fontSize: '12px', fontWeight: '700', marginBottom: '8px' }}>🗄️ ERP 大脑数据库</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {brain.erp_tables.slice(0, 8).map(t => (
+                  <div key={t.table} style={{ padding: '3px 8px', background: 'rgba(255,152,0,0.1)', border: '1px solid rgba(255,152,0,0.3)', borderRadius: '4px', fontSize: '10px', color: '#ff9800' }}>
+                    {t.table}: <strong>{t.rows.toLocaleString()}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* 下达指令 */}
+      {!loading && activeSection === 'command' && (
+        <div style={S.card}>
+          <div style={{ color: '#00d9ff', fontSize: '12px', fontWeight: '700', marginBottom: '10px' }}>💬 向 JIMI 主脑下达自然语言指令</div>
+          <textarea
+            value={cmdInput}
+            onChange={e => setCmdInput(e.target.value)}
+            placeholder="例如：查一下本月银行流水总额 / 帮我分析最近的财务异常 / 统计所有客户数量..."
+            style={{ width: '100%', minHeight: '80px', background: '#161b22', border: '1px solid #30363d', borderRadius: '6px', padding: '8px', color: '#e0e0e0', fontSize: '13px', resize: 'vertical', outline: 'none', boxSizing: 'border-box' }}
+            onKeyDown={e => { if (e.ctrlKey && e.key === 'Enter') sendCommand(); }}
+          />
+          <div style={{ display: 'flex', gap: '8px', marginTop: '8px', alignItems: 'center' }}>
+            <button onClick={sendCommand} disabled={cmdLoading} style={{ padding: '7px 20px', background: cmdLoading ? '#21262d' : 'linear-gradient(135deg,#00d9ff,#0099cc)', border: 'none', borderRadius: '6px', color: cmdLoading ? '#6c757d' : '#0a0e1a', cursor: cmdLoading ? 'not-allowed' : 'pointer', fontWeight: '800', fontSize: '13px' }}>
+              {cmdLoading ? '⏳ JIMI 思考中...' : '🚀 发送指令 (Ctrl+Enter)'}
+            </button>
+            <span style={{ color: '#6c757d', fontSize: '11px' }}>JIMI 会自动访问 ERP 大脑后回复</span>
+          </div>
+          {cmdReply && (
+            <div style={{ marginTop: '12px', padding: '10px 14px', background: 'rgba(0,217,255,0.05)', border: '1px solid rgba(0,217,255,0.2)', borderRadius: '8px' }}>
+              <div style={{ color: '#6c757d', fontSize: '10px', marginBottom: '4px' }}>🧠 JIMI 回复：</div>
+              <div style={{ color: '#e0e0e0', fontSize: '13px', lineHeight: '1.6', whiteSpace: 'pre-wrap' }}>{cmdReply}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 技能库 */}
+      {!loading && activeSection === 'skills' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <div style={{ color: '#4caf50', fontSize: '12px', fontWeight: '700' }}>🧩 Curator 自动生成的技能库</div>
+            <button onClick={fetchSkills} style={{ padding: '4px 10px', background: 'rgba(76,175,80,0.1)', color: '#4caf50', border: '1px solid rgba(76,175,80,0.3)', borderRadius: '5px', cursor: 'pointer', fontSize: '11px' }}>🔄 刷新</button>
+          </div>
+          {skills.length === 0 ? (
+            <div style={{ color: '#6c757d', textAlign: 'center', padding: '30px' }}>暂无技能（运行一次 Curator 自动生成）</div>
+          ) : skills.filter(s => !s.name.startsWith('-')).map(sk => (
+            <div key={sk.name} style={{ ...S.card, marginBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                <span style={{ padding: '2px 6px', background: 'rgba(76,175,80,0.15)', color: '#4caf50', borderRadius: '4px', fontSize: '10px', fontWeight: '700' }}>{sk.state}</span>
+                <span style={{ color: '#00d9ff', fontSize: '12px', fontWeight: '700' }}>{sk.name}</span>
+              </div>
+              <div style={{ color: '#9e9e9e', fontSize: '11px' }}>{sk.description}</div>
+              {sk.trigger_keywords?.length > 0 && (
+                <div style={{ display: 'flex', gap: '4px', marginTop: '6px', flexWrap: 'wrap' }}>
+                  {sk.trigger_keywords.map(k => <span key={k} style={{ padding: '1px 5px', background: 'rgba(0,217,255,0.1)', color: '#00d9ff', borderRadius: '3px', fontSize: '9px' }}>{k}</span>)}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 分身会话列表 */}
+      {!loading && activeSection === 'agents' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <div style={{ color: '#bb86fc', fontSize: '12px', fontWeight: '700' }}>🤖 JIMI 分身会话（替代 OpenClaw）</div>
+            <button onClick={fetchAgents} style={{ padding: '4px 10px', background: 'rgba(187,134,252,0.1)', color: '#bb86fc', border: '1px solid rgba(187,134,252,0.3)', borderRadius: '5px', cursor: 'pointer', fontSize: '11px' }}>🔄 刷新</button>
+          </div>
+          {agents.length === 0 ? (
+            <div style={{ color: '#6c757d', textAlign: 'center', padding: '30px' }}>暂无活动分身会话</div>
+          ) : agents.map(ag => (
+            <div key={ag.id} style={{ ...S.card, marginBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ color: '#e0e0e0', fontSize: '13px', fontWeight: '700' }}>{ag.display_name || ag.email}</div>
+                  <div style={{ color: '#6c757d', fontSize: '11px' }}>{ag.email} · {ag.display}</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: '600', background: ag.status === 'busy' ? 'rgba(255,152,0,0.15)' : 'rgba(76,175,80,0.15)', color: ag.status === 'busy' ? '#ff9800' : '#4caf50' }}>{ag.status === 'busy' ? '⚡ 执行中' : '✅ 空闲'}</span>
+                  {ag.novnc_url && <a href={ag.novnc_url} target="_blank" rel="noreferrer" style={{ padding: '2px 8px', background: 'rgba(0,217,255,0.1)', color: '#00d9ff', border: '1px solid rgba(0,217,255,0.3)', borderRadius: '4px', fontSize: '10px', textDecoration: 'none' }}>🖥️ 桌面</a>}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 分配任务给分身 */}
+      {!loading && activeSection === 'assign' && (
+        <div style={S.card}>
+          <div style={{ color: '#ff9800', fontSize: '12px', fontWeight: '700', marginBottom: '10px' }}>📋 通过 JIMI 主脑向分身分配任务</div>
+          <div style={{ marginBottom: '8px' }}>
+            <div style={{ color: '#6c757d', fontSize: '11px', marginBottom: '4px' }}>分身邮箱</div>
+            <input value={taskEmail} onChange={e => setTaskEmail(e.target.value)} placeholder="例如: jilong@jilong.com"
+              style={{ width: '100%', background: '#161b22', border: '1px solid #30363d', borderRadius: '6px', padding: '7px', color: '#e0e0e0', fontSize: '12px', outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+          <div style={{ marginBottom: '10px' }}>
+            <div style={{ color: '#6c757d', fontSize: '11px', marginBottom: '4px' }}>任务描述（自然语言）</div>
+            <textarea value={taskDesc} onChange={e => setTaskDesc(e.target.value)} placeholder="例如: 打开 ERP，查询今天的新增客户并汇总发给我"
+              style={{ width: '100%', minHeight: '60px', background: '#161b22', border: '1px solid #30363d', borderRadius: '6px', padding: '7px', color: '#e0e0e0', fontSize: '12px', resize: 'vertical', outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+          <button onClick={assignTask} style={{ padding: '7px 20px', background: 'linear-gradient(135deg,#ff9800,#e65100)', border: 'none', borderRadius: '6px', color: '#fff', cursor: 'pointer', fontWeight: '800', fontSize: '13px' }}>📤 提交任务</button>
+          {taskResult && <div style={{ marginTop: '10px', padding: '8px 12px', background: taskResult.startsWith('✅') ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)', borderRadius: '6px', color: taskResult.startsWith('✅') ? '#4caf50' : '#f44336', fontSize: '12px' }}>{taskResult}</div>}
+        </div>
+      )}
+
+      {!online && !loading && (
+        <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', borderRadius: '8px', color: '#f44336', fontSize: '12px', textAlign: 'center' }}>
+          ❌ JIMI 主脑离线（192.168.1.110:5002）<br />
+          <span style={{ color: '#6c757d', fontSize: '11px' }}>请确认 JIMI 服务已启动：cd jimi && ./start_fusion.sh</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 三机互守面板 ──────────────────────────────────────────
 function SwarmGuardPanel() {
   const [repairLog, setRepairLog] = React.useState([]);
@@ -754,24 +1032,40 @@ const AIPlatform = () => {
       novncUrl: c.novncUrl,
     }));
 
-  // 贡献榜
-  const contributions = liveContainers
-    .filter(c => /^(gimi|worker)\d+$/.test(c.name))
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((c, i) => {
-      const isOnline = c.status === 'healthy';
-      const score = isOnline ? Math.max(0, 9999 - i * 1200) : 0;
-      return {
-        rank: i + 1,
-        name: c.name === 'worker0' ? 'worker0 (Manager)' : c.name,
-        health: c.status,
-        uptime: c.uptime,
-        novnc: c.novnc ? '✅' : '—',
-        score,
-      };
-    })
-    .sort((a, b) => b.score - a.score)
-    .map((item, i) => ({ ...item, rank: i + 1 }));
+  // 贡献榜 — 基于容器实际在线时长计算真实得分（非硬编码）
+  // 在线加基础分，uptime 越久得分越高，任务消息贡献加成
+  const contributions = (() => {
+    const msgCountByWorker = {};
+    chatMessages.forEach(m => {
+      const match = (m.from || '').match(/^(gimi|worker)\d+$/);
+      if (match) msgCountByWorker[m.from] = (msgCountByWorker[m.from] || 0) + 1;
+    });
+    return liveContainers
+      .filter(c => /^(gimi|worker)\d+$/.test(c.name))
+      .map(c => {
+        const isOnline = c.status === 'healthy' || c.status === 'up';
+        // uptime 转分钟数作为基础分
+        const uptimeMatch = (c.uptime || '').match(/(\d+)\s*(hour|minute|day|min)/i);
+        let uptimeMins = 0;
+        if (uptimeMatch) {
+          const v = parseInt(uptimeMatch[1]);
+          const u = uptimeMatch[2].toLowerCase();
+          uptimeMins = u.startsWith('d') ? v * 1440 : u.startsWith('h') ? v * 60 : v;
+        }
+        const msgBonus = (msgCountByWorker[c.name] || 0) * 50;
+        const score = isOnline ? Math.min(9999, uptimeMins * 2 + msgBonus + 500) : 0;
+        return {
+          name: c.name === 'worker0' ? 'worker0 (Manager)' : c.name,
+          health: c.status,
+          uptime: c.uptime,
+          novnc: c.novnc ? '✅' : '—',
+          score,
+          msgs: msgCountByWorker[c.name] || 0,
+        };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map((item, i) => ({ ...item, rank: i + 1 }));
+  })();
 
   // 人机配对数据 — gimi1~12 对接 12位同事
   const [pairings] = useState(
@@ -815,15 +1109,19 @@ const AIPlatform = () => {
     { id: 15, category: '模型分工', title: '禁止自动升级', content: '禁止执行npm update openclaw/openclaw update任何命令。禁止开启自动升级定时任务。遇升级提示一律忽略。', priority: '🟢 低' },
   ]);
 
-  // 操作日志数据
-  const [logs] = useState([
-    { id: 1, time: '21:45', user: '1 号吉秘', action: '任务更新', target: 'TAX-A1-PORYL', status: 'success' },
-    { id: 2, time: '21:43', user: '7 号 Mac', action: 'Skill 开发', target: 'S1-AUDIT', status: 'success' },
-    { id: 3, time: '21:40', user: 'System', action: '自动备份', target: 'memory-lancedb-pro', status: 'success' },
-    { id: 4, time: '21:35', user: '2 号', action: '数据查询', target: 'ERP MySQL', status: 'success' },
-    { id: 5, time: '21:30', user: 'Legion 3090', action: '服务重启', target: 'ERP Backend', status: 'warning' },
-    { id: 6, time: '21:25', user: '3 号 Linux', action: '连接尝试', target: 'SSH', status: 'error' },
-  ]);
+  // 操作日志 — 从平台消息流实时生成（不再硬编码）
+  const logs = chatMessages
+    .filter(m => m.type === 'task' || m.type === 'jimi' || m.type === 'purge' || m.type === 'system')
+    .slice(-20)
+    .reverse()
+    .map((m, i) => ({
+      id: m.id || i,
+      time: m.time || new Date(m.ts).toLocaleTimeString('zh-CN', { hour12: false }),
+      user: m.from || 'System',
+      action: m.type === 'task' ? '任务分配' : m.type === 'jimi' ? 'JIMI指令' : m.type === 'purge' ? '净化检查' : '系统事件',
+      target: (m.content || '').slice(0, 40),
+      status: 'success',
+    }));
 
   const [messages] = useState([
     { id: 1, type: 'system', tag: '已完成', content: 'rsync Legion 同步代码：rsync -avz ...' },
@@ -946,6 +1244,7 @@ const AIPlatform = () => {
               <button className={activeTab === 'codeFactory' ? 'active' : ''} onClick={() => setActiveTab('codeFactory')}>💻 代码工厂</button>
               <button className={activeTab === 'aiChat' ? 'active' : ''} onClick={() => setActiveTab('aiChat')}>🤖 AI 助手</button>
               <button className={activeTab === 'swarmGuard' ? 'active' : ''} onClick={() => setActiveTab('swarmGuard')}>🛡️ 三机互守</button>
+              <button className={activeTab === 'jimiBrain' ? 'active' : ''} onClick={() => setActiveTab('jimiBrain')} style={{background: activeTab==='jimiBrain' ? 'rgba(0,217,255,0.15)' : '', color: activeTab==='jimiBrain' ? '#00d9ff' : '', borderColor: activeTab==='jimiBrain' ? '#00d9ff' : ''}}>🧠 JIMI主脑</button>
             </div>
      
         </div>
@@ -1422,6 +1721,11 @@ const AIPlatform = () => {
             {/* ====== 三机互守 Tab ====== */}
             {activeTab === 'swarmGuard' && (
               <SwarmGuardPanel />
+            )}
+
+            {/* ====== JIMI 主脑 Tab ====== */}
+            {activeTab === 'jimiBrain' && (
+              <JimiBrainPanel />
             )}
 
           </div>
