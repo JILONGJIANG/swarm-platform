@@ -272,30 +272,36 @@ function PhoneHubPanel() {
   const [editReply, setEditReply] = React.useState({});  // groupId → reply text
   const [genLoading, setGenLoading] = React.useState(false);
 
-  const HUB_ID = hubs[0]?.id || 'hub-1';
+  // 同局域网直连 phone-hub：浏览器直接调 hub，无需经过 swarm-platform 代理
+  // hub 列表从 swarm-platform 拿（支持多机器），实际 API 直连 hub
+  const hubUrlRef = React.useRef('http://192.168.1.110:5050');
+  React.useEffect(() => {
+    if (hubs[0]?.url) hubUrlRef.current = hubs[0].url;
+  }, [hubs]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3000); };
 
-  // 通用代理调用
   const phoneCall = (path, body = {}) =>
-    fetch('/api/phone/proxy', {
+    fetch(`${hubUrlRef.current}${path}`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ hub_id: HUB_ID, path, method: 'POST', body }),
+      body: JSON.stringify(body),
     }).then(r => r.json());
+
+  const hubGet = (path) => fetch(`${hubUrlRef.current}${path}`).then(r => r.json());
 
   const fetchAll = () => {
     fetch('/api/phone/status').then(r=>r.json()).then(d=>setHubs(d.hubs||[])).catch(()=>{});
-    fetch('/api/phone/summary').then(r=>r.json()).then(d=>{setSummary(d.summaries?.[0]||null);setLoading(false);}).catch(()=>setLoading(false));
-    fetch('/api/phone/devices').then(r=>r.json()).then(d=>setDevices(d.devices||[])).catch(()=>{});
+    hubGet('/api/summary').then(d=>{setSummary(d||null);setLoading(false);}).catch(()=>setLoading(false));
+    hubGet('/api/status').then(d=>setDevices(d.devices||[])).catch(()=>{});
   };
   const fetchWechat = () => {
-    fetch('/api/phone/wechat').then(r=>r.json()).then(d=>setWechat(d.data||[])).catch(()=>{});
-    fetch('/api/phone/proxy', {method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({hub_id:HUB_ID,path:'/api/wechat/groups',method:'GET'})
-    }).then(r=>r.json()).then(d=>setGroups(d.data||[])).catch(()=>{});
+    hubGet('/api/wechat/conversations').then(d=>setWechat(Array.isArray(d)?d:[])).catch(()=>{});
+    hubGet('/api/wechat/groups').then(d=>setGroups(Array.isArray(d)?d:[])).catch(()=>{});
   };
   const fetchXhs = () => {
-    fetch('/api/phone/xhs').then(r=>r.json()).then(d=>setXhs(d.data||[])).catch(()=>{});
+    hubGet('/api/xhs/queue').then(d=>{
+      setXhs(Array.isArray(d) ? d : (d?.posts || []));
+    }).catch(()=>{});
   };
 
   React.useEffect(()=>{ fetchAll(); const t=setInterval(fetchAll,15000); return()=>clearInterval(t); },[]);
